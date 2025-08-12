@@ -1,0 +1,21 @@
+services:
+  ptbot:
+    image: ghcr.io/jacoknapp/ptbot:latest
+    container_name: ptbot
+    restart: unless-stopped
+    # Writable volume so the app can generate /data/config.json on first run
+    volumes:
+      - ./data:/data
+    environment:
+      # Optional: set these to pre-populate the generated config on first run.
+      # If not set, placeholders will be written and the app will warn.
+      DISCORD_TOKEN: ${DISCORD_TOKEN:-}
+      PTERO_BASE_URL: ${PTERO_BASE_URL:-}
+      PTERO_CLIENT_TOKEN: ${PTERO_CLIENT_TOKEN:-}
+      ALERT_CHANNEL_ID: ${ALERT_CHANNEL_ID:-}
+      HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-2m}
+      ALLOWED_GUILD_IDS: ${ALLOWED_GUILD_IDS:-}
+      ALLOWED_ROLE_IDS: ${ALLOWED_ROLE_IDS:-}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
+      PTBOT_INSECURE: ${PTBOT_INSECURE:-false}
+    command: ["-config", "/data/config.json"]
