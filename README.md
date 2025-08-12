@@ -52,7 +52,7 @@ services:
       ALLOWED_GUILD_IDS: <comma-separated-guild-ids> #optional
       ALLOWED_ROLE_IDS: <comma-separated-role-ids> #optional
       ALLOWED_USER_IDS: <comma-separated-user-ids> #optional
-      PTBOT_INSECURE: false # set to true to allow untrusted TLS certs #optional
+      PTBOT_INSECURE: false #optional, set to true to allow untrusted TLS certs, env only
     command: ["-config", "/data/config.json"]
 ```
 
