@@ -58,7 +58,7 @@ services:
 
 ### Running
 1. Copy the example above to `docker-compose.yml`.
-2. Fill in your secrets and settings.
+2. Fill in your secrets and settings (optional if using config).
 3. Run:
    ```sh
    docker compose up -d
