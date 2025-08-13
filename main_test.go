@@ -77,6 +77,65 @@ func TestParseDurDefault(t *testing.T) {
 	}
 }
 
+func TestEffectiveTokenSetAndClear(t *testing.T) {
+	// set default config
+	config.Store(&Config{PteroClientToken: "default"})
+	// ensure clean map
+	userTokensMu.Lock()
+	userTokens = map[string]string{}
+	userTokensMu.Unlock()
+
+	uid := "123"
+	if tok := effectiveToken(uid); tok != "default" {
+		t.Fatalf("effectiveToken fallback=%q want default", tok)
+	}
+	setUserToken(uid, "abc")
+	if tok := effectiveToken(uid); tok != "abc" {
+		t.Fatalf("effectiveToken set=%q want abc", tok)
+	}
+	clearUserToken(uid)
+	if tok := effectiveToken(uid); tok != "default" {
+		t.Fatalf("effectiveToken cleared=%q want default", tok)
+	}
+}
+
+func TestTokenForUserOrError(t *testing.T) {
+	// reset user tokens
+	userTokensMu.Lock()
+	userTokens = map[string]string{}
+	userTokensMu.Unlock()
+
+	// Case 1: user token set -> returned
+	config.Store(&Config{PteroClientToken: "default"})
+	setUserToken("u1", "per-user")
+	tok, err := tokenForUserOrError("u1")
+	if err != nil || tok != "per-user" {
+		t.Fatalf("expected per-user token, got tok=%q err=%v", tok, err)
+	}
+
+	// Case 2: no user token, valid default -> returned
+	clearUserToken("u1")
+	config.Store(&Config{PteroClientToken: "default-real"})
+	tok, err = tokenForUserOrError("u1")
+	if err != nil || tok != "default-real" {
+		t.Fatalf("expected default token, got tok=%q err=%v", tok, err)
+	}
+
+	// Case 3: missing default -> error
+	config.Store(&Config{PteroClientToken: ""})
+	tok, err = tokenForUserOrError("u2")
+	if err == nil || !strings.Contains(err.Error(), "no API key available") {
+		t.Fatalf("expected missing token error, got tok=%q err=%v", tok, err)
+	}
+
+	// Case 4: placeholder default -> error
+	config.Store(&Config{PteroClientToken: "REPLACE_ME_PTERO_TOKEN"})
+	tok, err = tokenForUserOrError("u3")
+	if err == nil || !strings.Contains(err.Error(), "no API key available") {
+		t.Fatalf("expected placeholder error, got tok=%q err=%v", tok, err)
+	}
+}
+
 // ---------- config bootstrap tests ----------
 
 func TestWriteConfigFromEnvAndLoad(t *testing.T) {
@@ -241,8 +300,10 @@ func TestListServersAndResolve(t *testing.T) {
 		PteroClientToken: "y",
 	})
 
+	token := "y"
+
 	// listServers
-	got, err := listServers()
+	got, err := listServers(token)
 	if err != nil {
 		t.Fatalf("listServers: %v", err)
 	}
@@ -251,27 +312,57 @@ func TestListServersAndResolve(t *testing.T) {
 	}
 
 	// resolve exact
-	id, err := resolveServerIDByName("valheim")
+	id, err := resolveServerIDByName("valheim", token)
 	if err != nil || id != "ghi789" {
 		t.Fatalf("resolve exact -> (%s,%v)", id, err)
 	}
 	// resolve prefix
-	id, err = resolveServerIDByName("mc-")
+	id, err = resolveServerIDByName("mc-", token)
 	if err == nil {
 		t.Fatalf("expected ambiguous error for prefix 'mc-', got id=%s", id)
 	}
 	// resolve unique prefix
-	id, err = resolveServerIDByName("val")
+	id, err = resolveServerIDByName("val", token)
 	if err != nil || id != "ghi789" {
 		t.Fatalf("resolve prefix -> (%s,%v)", id, err)
 	}
 
 	// getResources
-	stats, err := getResources("abc123")
+	stats, err := getResources("abc123", token)
 	if err != nil {
 		t.Fatalf("getResources: %v", err)
 	}
 	if stats.Attributes.CurrentState != "running" || stats.Attributes.Resources.CPUAbsolute <= 0 {
 		t.Fatalf("unexpected resources: %+v", stats.Attributes)
+	}
+}
+
+func TestCheckPanelHealth_DefaultTokenMissingOrPlaceholder(t *testing.T) {
+	// Missing
+	config.Store(&Config{PteroBaseURL: "https://example.invalid", PteroClientToken: ""})
+	if err := checkPanelHealth(); err == nil || !strings.Contains(err.Error(), "default API key not set") {
+		t.Fatalf("expected default missing error, got %v", err)
+	}
+	// Placeholder
+	config.Store(&Config{PteroBaseURL: "https://example.invalid", PteroClientToken: "REPLACE_ME_PTERO_TOKEN"})
+	if err := checkPanelHealth(); err == nil || !strings.Contains(err.Error(), "default API key not set") {
+		t.Fatalf("expected default placeholder error, got %v", err)
+	}
+}
+
+func TestCheckPanelHealth_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/client/account" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok": true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	config.Store(&Config{PteroBaseURL: srv.URL, PteroClientToken: "valid"})
+	if err := checkPanelHealth(); err != nil {
+		t.Fatalf("checkPanelHealth ok -> %v", err)
 	}
 }

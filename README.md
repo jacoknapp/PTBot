@@ -15,6 +15,8 @@ PTBot is a Go-based Discord bot that lets you manage your Pterodactyl servers di
 - **Role & User Restrictions**: Only the cool kids (or the ones you allow) can use the bot. 😎
 - **Health Checks**: PTBot keeps an eye on your Pterodactyl panel and sends alerts if things go sideways. ⚠️
 - **Configurable**: Set up via config file or environment variables. Supports allowlists for guilds, roles, and users.
+- **Per-user API keys**: Users can set their own Pterodactyl API key so their own server access and permissions apply.
+   - Stored encrypted-at-rest on the bot host. The encryption key is provided via PTBOT_TOKENS_SECRET (preferred) or a 32-byte key file at /data/user_tokens.key.
 
 ## Example Commands
 - `/pt list` – See all your servers 📋
@@ -23,6 +25,7 @@ PTBot is a Go-based Discord bot that lets you manage your Pterodactyl servers di
 - `/pt stop name:<server>` – Stop a server ⏹️
 - `/pt restart name:<server>` – Restart a server 🔄
 - `/pt send name:<server> command:<cmd>` – Send a console command 💻
+- `/pt key value:<token|clear>` – Set your personal Pterodactyl API key, or `clear` to remove it 🔐
 
 ## Setup
 1. **Build the bot** (see Dockerfile for details)
@@ -109,6 +112,11 @@ To use PTBot, you'll need a Pterodactyl Client API key. Here's how to get one:
 6. Copy the generated API key and use it as the value for `PTERO_CLIENT_TOKEN` in your PTBot configuration.
 
 > **Note:** Keep your API key secret! Anyone with this key can control your servers via PTBot.
+
+### Using your own key (optional)
+- Run `/pt key value:<your-token>` to save your key securely on the bot host (encrypted-at-rest depends on filesystem; stored with 0600 permissions). From now on, your `/pt` commands will use your key.
+- Run `/pt key value:clear` to remove it and fall back to the bot's default key.
+ - For best security, set PTBOT_TOKENS_SECRET in the container environment. Alternatively, mount a 32-byte raw key file at /data/user_tokens.key.
 
 ## Contributing
 PRs welcome! If you have a fun idea (or just want to add more emojis), fork away. 🦄
