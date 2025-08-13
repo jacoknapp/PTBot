@@ -179,6 +179,8 @@ func onInteractionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		doPower(s, i, "stop")
 	case "restart":
 		doPower(s, i, "restart")
+	case "backup":
+		doBackup(s, i)
 	case "send":
 		doSend(s, i)
 	case "key":
@@ -338,6 +340,17 @@ func registerCommands() error {
 			},
 			{
 				Type:        discordgo.ApplicationCommandOptionSubCommand,
+				Name:        "backup",
+				Description: "Create a backup for a server",
+				Options: []*discordgo.ApplicationCommandOption{
+					{Name: "name", Description: "Server name (exact/prefix)", Type: discordgo.ApplicationCommandOptionString, Required: true, Autocomplete: true},
+					{Name: "backup_name", Description: "Optional backup name/description", Type: discordgo.ApplicationCommandOptionString, Required: false},
+					{Name: "ignored", Description: "Optional ignored patterns (one per line)", Type: discordgo.ApplicationCommandOptionString, Required: false},
+					{Name: "lock", Description: "Lock the backup from deletion", Type: discordgo.ApplicationCommandOptionBoolean, Required: false},
+				},
+			},
+			{
+				Type:        discordgo.ApplicationCommandOptionSubCommand,
 				Name:        "send",
 				Description: "Send a console command",
 				Options: []*discordgo.ApplicationCommandOption{
@@ -386,7 +399,14 @@ func doList(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		names = append(names, sv.Name)
 	}
 	sort.Strings(names)
-	editFollowup(s, i, "**Servers**\n• "+strings.Join(names, "\n• "))
+	// Pretty embed list
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("Servers (%d)", len(names)),
+		Description: "• " + strings.Join(names, "\n• "),
+		Color:       0x5865F2, // blurple
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+	editFollowupEmbed(s, i, embed)
 }
 
 // doStatus shows live resource stats for a server, resolving by exact or
@@ -406,16 +426,28 @@ func doStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		editFollowup(s, i, fmt.Sprintf("❌ status error: %v", err))
 		return
 	}
-	msg := fmt.Sprintf(
-		"**%s** (`%s`)\nState: **%s**%s\nCPU: %.1f%%  Mem: %.1f MiB  Disk: %.1f GiB\nNet: rx %.1f MiB / tx %.1f MiB",
-		name, id, st.Attributes.CurrentState, ternary(st.Attributes.IsSuspended, " (suspended)", ""),
-		st.Attributes.Resources.CPUAbsolute,
-		float64(st.Attributes.Resources.MemoryBytes)/(1024*1024),
-		float64(st.Attributes.Resources.DiskBytes)/(1024*1024*1024),
-		float64(st.Attributes.Resources.NetworkRxBytes)/(1024*1024),
-		float64(st.Attributes.Resources.NetworkTxBytes)/(1024*1024),
-	)
-	editFollowup(s, i, msg)
+	// Pretty embed status
+	state := st.Attributes.CurrentState
+	suspended := st.Attributes.IsSuspended
+	memMiB := float64(st.Attributes.Resources.MemoryBytes) / (1024 * 1024)
+	diskGiB := float64(st.Attributes.Resources.DiskBytes) / (1024 * 1024 * 1024)
+	rxMiB := float64(st.Attributes.Resources.NetworkRxBytes) / (1024 * 1024)
+	txMiB := float64(st.Attributes.Resources.NetworkTxBytes) / (1024 * 1024)
+	fields := []*discordgo.MessageEmbedField{
+		{Name: "State", Value: fmt.Sprintf("%s %s", stateEmoji(state, suspended), boldState(state, suspended)), Inline: true},
+		{Name: "CPU", Value: fmt.Sprintf("%.1f%%", st.Attributes.Resources.CPUAbsolute), Inline: true},
+		{Name: "Memory", Value: fmt.Sprintf("%.1f MiB", memMiB), Inline: true},
+		{Name: "Disk", Value: fmt.Sprintf("%.1f GiB", diskGiB), Inline: true},
+		{Name: "Network", Value: fmt.Sprintf("⬇️ %.1f MiB\n⬆️ %.1f MiB", rxMiB, txMiB), Inline: true},
+	}
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("%s", name),
+		Description: fmt.Sprintf("`%s`", id),
+		Fields:      fields,
+		Color:       stateColor(state, suspended),
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+	editFollowupEmbed(s, i, embed)
 }
 
 // doPower sends a power action (start/stop/restart) to a server on behalf of
@@ -434,7 +466,48 @@ func doPower(s *discordgo.Session, i *discordgo.InteractionCreate, signal string
 		editFollowup(s, i, fmt.Sprintf("❌ %s failed: %v", signal, err))
 		return
 	}
-	editFollowup(s, i, fmt.Sprintf("✅ issued `%s` to **%s**", signal, name))
+	// Pretty embed confirmation
+	embed := &discordgo.MessageEmbed{
+		Title:       "Action issued",
+		Description: fmt.Sprintf("`%s` → **%s**", signal, name),
+		Color:       0x57F287, // green
+		Timestamp:   time.Now().Format(time.RFC3339),
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Server ID", Value: fmt.Sprintf("`%s`", id), Inline: true},
+			{Name: "Action", Value: signal, Inline: true},
+		},
+	}
+	editFollowupEmbed(s, i, embed)
+
+	// Announce publicly in the channel who requested the action
+	// derive a friendly display name (nick or username)
+	requester := userDisplayName(i.Member)
+	publicEmbed := &discordgo.MessageEmbed{
+		Title:     "Server action",
+		Color:     0x5865F2,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Server", Value: fmt.Sprintf("**%s**\n`%s`", name, id), Inline: true},
+			{Name: "Action", Value: signal, Inline: true},
+			{Name: "Requested by", Value: requester, Inline: true},
+		},
+	}
+	content := fmt.Sprintf("🛠️ %s is running the action %s on %s", requester, signal, name)
+	_, _ = s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{Content: content, Embeds: []*discordgo.MessageEmbed{publicEmbed}})
+}
+
+// userDisplayName returns the best display name for a member (nick > username > id)
+func userDisplayName(m *discordgo.Member) string {
+	if m == nil || m.User == nil {
+		return "unknown"
+	}
+	if strings.TrimSpace(m.Nick) != "" {
+		return m.Nick
+	}
+	if strings.TrimSpace(m.User.Username) != "" {
+		return m.User.Username
+	}
+	return m.User.ID
 }
 
 // doSend sends a console command to the specified server using the user's
@@ -454,7 +527,63 @@ func doSend(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		editFollowup(s, i, fmt.Sprintf("❌ send failed: %v", err))
 		return
 	}
-	editFollowup(s, i, fmt.Sprintf("📤 sent to **%s**: `%s`", name, cmd))
+	embed := &discordgo.MessageEmbed{
+		Title:     "Command sent",
+		Color:     0x5865F2,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Server", Value: fmt.Sprintf("**%s**\n`%s`", name, id), Inline: true},
+			{Name: "Command", Value: fmt.Sprintf("`%s`", cmd), Inline: true},
+		},
+	}
+	editFollowupEmbed(s, i, embed)
+}
+
+// doBackup triggers a Pterodactyl backup for the specified server.
+// Uses the caller's effective token. Accepts optional label.
+func doBackup(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	name := optionString(i, "name")
+	backupName := optionString(i, "backup_name")
+	ignored := optionString(i, "ignored")
+	lock := optionBool(i, "lock")
+	tok, err := tokenForUserOrError(i.Member.User.ID)
+	if err != nil { respondEphemeral(s, i, "❌ "+err.Error()); return }
+	id, err := resolveServerIDByName(name, tok)
+	if err != nil {
+		respondEphemeral(s, i, "❌ "+err.Error())
+		return
+	}
+	respondThinking(s, i)
+	if err := postBackup(id, backupName, ignored, lock, tok); err != nil {
+		editFollowup(s, i, fmt.Sprintf("❌ backup failed: %v", err))
+		return
+	}
+	// confirmation embed
+	fields := []*discordgo.MessageEmbedField{
+		{Name: "Server", Value: fmt.Sprintf("**%s**\n`%s`", name, id), Inline: true},
+	}
+	if strings.TrimSpace(backupName) != "" {
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Name", Value: backupName, Inline: true})
+	}
+	if strings.TrimSpace(ignored) != "" {
+		// show a preview (first 2 lines) to avoid long messages
+		lines := strings.Split(ignored, "\n")
+		preview := lines[0]
+		if len(lines) > 1 {
+			preview = preview + " …"
+		}
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Ignored", Value: fmt.Sprintf("`%s`", preview), Inline: true})
+	}
+	if lock {
+		fields = append(fields, &discordgo.MessageEmbedField{Name: "Locked", Value: "true", Inline: true})
+	}
+	embed := &discordgo.MessageEmbed{
+		Title:     "Backup requested",
+		Color:     0x57F287,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Fields:    fields,
+	}
+	editFollowupEmbed(s, i, embed)
 }
 
 // doSetKey saves or clears the caller's personal Pterodactyl API key.
@@ -465,7 +594,14 @@ func doSetKey(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	uid := i.Member.User.ID
 	if strings.EqualFold(strings.TrimSpace(raw), "clear") || raw == "" {
 		clearUserToken(uid)
-		respondEphemeral(s, i, "🗑️ Cleared your personal API key. The default key will be used.")
+		// Slightly prettier confirmation
+		embed := &discordgo.MessageEmbed{
+			Title:       "API key removed",
+			Description: "Your personal API key was cleared. The bot will use the default key if configured.",
+			Color:       0xED4245,
+			Timestamp:   time.Now().Format(time.RFC3339),
+		}
+		respondEphemeralEmbed(s, i, embed)
 		return
 	}
 	// Defer response to avoid 3s timeout, then validate
@@ -473,10 +609,22 @@ func doSetKey(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Save key and make a quick sanity check call to validate it (optional)
 	setUserToken(uid, raw)
 	if _, err := listServers(raw); err != nil {
-		editFollowup(s, i, "✅ Key saved, but validation failed: "+err.Error())
+		embed := &discordgo.MessageEmbed{
+			Title:       "Key saved",
+			Description: "Saved, but validation failed: " + err.Error(),
+			Color:       0xFEE75C,
+			Timestamp:   time.Now().Format(time.RFC3339),
+		}
+		editFollowupEmbed(s, i, embed)
 		return
 	}
-	editFollowup(s, i, "✅ Your API key was saved and validated.")
+	embed := &discordgo.MessageEmbed{
+		Title:       "Key saved",
+		Description: "Your API key was saved and validated.",
+		Color:       0x57F287,
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+	editFollowupEmbed(s, i, embed)
 }
 
 // optionString extracts a string option by name from a subcommand invocation.
@@ -491,11 +639,33 @@ func optionString(i *discordgo.InteractionCreate, name string) string {
 	return ""
 }
 
+// optionBool extracts a bool option by name from a subcommand invocation.
+func optionBool(i *discordgo.InteractionCreate, name string) bool {
+	for _, opt := range i.ApplicationCommandData().Options[0].Options {
+		if opt.Name == name {
+			if v, ok := opt.Value.(bool); ok {
+				return v
+			}
+		}
+	}
+	return false
+}
+
 // respondEphemeral replies to the interaction with an ephemeral message.
 func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Content: msg, Flags: discordgo.MessageFlagsEphemeral},
+	})
+}
+// respondEphemeralEmbed replies to the interaction with an ephemeral embed.
+func respondEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
+	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags:  discordgo.MessageFlagsEphemeral,
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
 	})
 }
 // respondThinking sends a deferred ephemeral response to indicate processing.
@@ -508,6 +678,58 @@ func respondThinking(s *discordgo.Session, i *discordgo.InteractionCreate) {
 // editFollowup edits the deferred ephemeral response with the final content.
 func editFollowup(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
 	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
+}
+// editFollowupEmbed edits the deferred response and replaces content with an embed.
+func editFollowupEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
+	embs := []*discordgo.MessageEmbed{embed}
+	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Embeds: &embs})
+}
+
+// emoji and color helpers for consistent styling
+func stateEmoji(state string, suspended bool) string {
+	if suspended { return "⏸️" }
+	switch strings.ToLower(state) {
+	case "running", "on":
+		return "🟢"
+	case "starting":
+		return "🟡"
+	case "stopping", "offline", "off":
+		return "🔴"
+	default:
+		return "⚪"
+	}
+}
+
+func boldState(state string, suspended bool) string {
+	if suspended {
+		return "Suspended"
+	}
+	s := strings.ToLower(state)
+	// capitalize first letter safely
+	if s == "" { return "**Unknown**" }
+	r := []rune(s)
+	r[0] = toUpperRune(r[0])
+	return "**" + string(r) + "**"
+}
+
+func toUpperRune(r rune) rune {
+	// basic ASCII fast path
+	if r >= 'a' && r <= 'z' { return r - 32 }
+	return []rune(strings.ToUpper(string(r)))[0]
+}
+
+func stateColor(state string, suspended bool) int {
+	if suspended { return 0x95A5A6 }
+	switch strings.ToLower(state) {
+	case "running", "on":
+		return 0x57F287
+	case "starting":
+		return 0xFEE75C
+	case "stopping", "offline", "off":
+		return 0xED4245
+	default:
+		return 0x5865F2
+	}
 }
 
 // reload re-reads the config file and applies in-memory overrides.
@@ -695,6 +917,31 @@ func postPower(id, signal string, token string) error {
 func postCommand(id, cmd string, token string) error {
 	url := strings.TrimRight(getCfg().PteroBaseURL, "/") + "/api/client/servers/" + id + "/command"
 	body := map[string]string{"command": cmd}
+	j, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(j))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	res, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		b, _ := io.ReadAll(res.Body)
+		return fmt.Errorf("POST %s -> %d: %s", url, res.StatusCode, string(b))
+	}
+	return nil
+}
+
+// postBackup requests a new backup for the server via Pterodactyl client API.
+// Endpoint: POST /api/client/servers/{id}/backups with optional {name: label}
+func postBackup(id, label, ignored string, lock bool, token string) error {
+	url := strings.TrimRight(getCfg().PteroBaseURL, "/") + "/api/client/servers/" + id + "/backups"
+	body := map[string]any{}
+	if strings.TrimSpace(label) != "" { body["name"] = label }
+	if strings.TrimSpace(ignored) != "" { body["ignored"] = ignored }
+	if lock { body["is_locked"] = true }
 	j, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(j))
 	req.Header.Set("Authorization", "Bearer "+token)

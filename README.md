@@ -25,6 +25,7 @@ PTBot is a Go-based Discord bot that lets you manage your Pterodactyl servers di
 - `/pt stop name:<server>` – Stop a server ⏹️
 - `/pt restart name:<server>` – Restart a server 🔄
 - `/pt send name:<server> command:<cmd>` – Send a console command 💻
+- `/pt backup name:<server> [backup_name:<text>] [ignored:<patterns>] [lock:true|false]` – Create a backup 🧰
 - `/pt key value:<token|clear>` – Set your personal Pterodactyl API key, or `clear` to remove it 🔐
 
 ## Setup

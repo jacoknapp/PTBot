@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -364,5 +365,34 @@ func TestCheckPanelHealth_OK(t *testing.T) {
 	config.Store(&Config{PteroBaseURL: srv.URL, PteroClientToken: "valid"})
 	if err := checkPanelHealth(); err != nil {
 		t.Fatalf("checkPanelHealth ok -> %v", err)
+	}
+}
+
+func TestPostBackup(t *testing.T) {
+	// Stub server to capture backup creation
+	var gotPath, gotMethod, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		if strings.HasSuffix(r.URL.Path, "/backups") && r.Method == http.MethodPost {
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"object":"backup","attributes":{}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	config.Store(&Config{PteroBaseURL: srv.URL, PteroClientToken: "t"})
+	ignored := "*.log\ncache/*"
+	if err := postBackup("abc123", "my-backup", ignored, true, "t"); err != nil {
+		t.Fatalf("postBackup: %v", err)
+	}
+	if !strings.HasSuffix(gotPath, "/api/client/servers/abc123/backups") || gotMethod != http.MethodPost {
+		t.Fatalf("unexpected request path/method: %s %s", gotMethod, gotPath)
+	}
+	if !strings.Contains(gotBody, "\"name\":\"my-backup\"") || !strings.Contains(gotBody, "\"ignored\":") || !strings.Contains(gotBody, "is_locked\":true") {
+		t.Fatalf("unexpected body: %s", gotBody)
 	}
 }
