@@ -55,6 +55,56 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Detect supported platforms
+        id: platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Determine the widest set of platforms supported by both base images
+          BUILDER_IMAGE="golang:1.25"
+          RUNTIME_IMAGE="gcr.io/distroless/static:nonroot"
+
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq > /dev/null
+          fi
+
+          to_list() {
+            local image="$1"
+            # Use buildx imagetools to fetch the raw manifest and extract linux platforms
+            docker buildx imagetools inspect --raw "$image" \
+            | jq -r '[.manifests[]? | select(.platform.os=="linux") | 
+                      (.platform.os + "/" + .platform.architecture + (if (.platform.variant // "") != "" then "/" + .platform.variant else "" end))] 
+                     | unique | .[]' \
+            | sort -u
+          }
+
+          mapfile -t BUILDER_PLATFORMS < <(to_list "$BUILDER_IMAGE" || true)
+          mapfile -t RUNTIME_PLATFORMS < <(to_list "$RUNTIME_IMAGE" || true)
+
+          # If either list is empty, fall back to a safe default
+          if [ ${#BUILDER_PLATFORMS[@]} -eq 0 ] || [ ${#RUNTIME_PLATFORMS[@]} -eq 0 ]; then
+            FALLBACK="linux/amd64,linux/arm64,linux/arm/v7"
+            echo "list=$FALLBACK" >> "$GITHUB_OUTPUT"
+            echo "Using fallback platforms: $FALLBACK"
+            exit 0
+          fi
+
+          # Compute intersection
+          printf '%s\n' "${BUILDER_PLATFORMS[@]}" | sort -u > /tmp/builder.txt
+          printf '%s\n' "${RUNTIME_PLATFORMS[@]}" | sort -u > /tmp/runtime.txt
+          INTERSECTION=$(grep -Fxf /tmp/builder.txt /tmp/runtime.txt | sort -u)
+
+          if [ -z "$INTERSECTION" ]; then
+            FALLBACK="linux/amd64,linux/arm64,linux/arm/v7"
+            echo "list=$FALLBACK" >> "$GITHUB_OUTPUT"
+            echo "No intersection found; using fallback platforms: $FALLBACK"
+          else
+            LIST=$(echo "$INTERSECTION" | paste -sd, -)
+            echo "list=$LIST" >> "$GITHUB_OUTPUT"
+            echo "Detected platforms: $LIST"
+          fi
+
       - name: Login to git
         uses: docker/login-action@v3
         with:
@@ -88,7 +138,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.platforms.outputs.list }}
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
 
