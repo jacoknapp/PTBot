@@ -1,6 +1,6 @@
 module github.com/jacoknapp/ptbot
 
-go 1.24
+go 1.25
 
 require (
 	github.com/bwmarrin/discordgo v0.27.1
