@@ -9,6 +9,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,7 +18,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"crypto/tls"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -27,9 +27,10 @@ import (
 	"syscall"
 	"time"
 
+	"encoding/base64"
+
 	"github.com/bwmarrin/discordgo"
-    "encoding/base64"
-    "golang.org/x/crypto/scrypt"
+	"golang.org/x/crypto/scrypt"
 )
 
 // Config contains runtime settings loaded from /data/config.json and
@@ -102,6 +103,9 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 	config.Store(cfg)
+
+	// Initialize the last-known health as good to avoid a false recovery message on first success
+	lastHealth.Store(true)
 
 	// Ensure token encryption key is initialized early (safe generation paths only)
 	if err := initTokenEncryptionKey(); err != nil {
@@ -414,7 +418,10 @@ func doList(s *discordgo.Session, i *discordgo.InteractionCreate) {
 func doStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	name := optionString(i, "name")
 	tok, err := tokenForUserOrError(i.Member.User.ID)
-	if err != nil { respondEphemeral(s, i, "❌ "+err.Error()); return }
+	if err != nil {
+		respondEphemeral(s, i, "❌ "+err.Error())
+		return
+	}
 	id, err := resolveServerIDByName(name, tok)
 	if err != nil {
 		respondEphemeral(s, i, "❌ "+err.Error())
@@ -455,7 +462,10 @@ func doStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 func doPower(s *discordgo.Session, i *discordgo.InteractionCreate, signal string) {
 	name := optionString(i, "name")
 	tok, err := tokenForUserOrError(i.Member.User.ID)
-	if err != nil { respondEphemeral(s, i, "❌ "+err.Error()); return }
+	if err != nil {
+		respondEphemeral(s, i, "❌ "+err.Error())
+		return
+	}
 	id, err := resolveServerIDByName(name, tok)
 	if err != nil {
 		respondEphemeral(s, i, "❌ "+err.Error())
@@ -516,7 +526,10 @@ func doSend(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	name := optionString(i, "name")
 	cmd := optionString(i, "command")
 	tok, err := tokenForUserOrError(i.Member.User.ID)
-	if err != nil { respondEphemeral(s, i, "❌ "+err.Error()); return }
+	if err != nil {
+		respondEphemeral(s, i, "❌ "+err.Error())
+		return
+	}
 	id, err := resolveServerIDByName(name, tok)
 	if err != nil {
 		respondEphemeral(s, i, "❌ "+err.Error())
@@ -547,7 +560,10 @@ func doBackup(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	ignored := optionString(i, "ignored")
 	lock := optionBool(i, "lock")
 	tok, err := tokenForUserOrError(i.Member.User.ID)
-	if err != nil { respondEphemeral(s, i, "❌ "+err.Error()); return }
+	if err != nil {
+		respondEphemeral(s, i, "❌ "+err.Error())
+		return
+	}
 	id, err := resolveServerIDByName(name, tok)
 	if err != nil {
 		respondEphemeral(s, i, "❌ "+err.Error())
@@ -658,6 +674,7 @@ func respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, msg 
 		Data: &discordgo.InteractionResponseData{Content: msg, Flags: discordgo.MessageFlagsEphemeral},
 	})
 }
+
 // respondEphemeralEmbed replies to the interaction with an ephemeral embed.
 func respondEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -668,6 +685,7 @@ func respondEphemeralEmbed(s *discordgo.Session, i *discordgo.InteractionCreate,
 		},
 	})
 }
+
 // respondThinking sends a deferred ephemeral response to indicate processing.
 func respondThinking(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -675,10 +693,12 @@ func respondThinking(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
 	})
 }
+
 // editFollowup edits the deferred ephemeral response with the final content.
 func editFollowup(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
 	_, _ = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &msg})
 }
+
 // editFollowupEmbed edits the deferred response and replaces content with an embed.
 func editFollowupEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, embed *discordgo.MessageEmbed) {
 	embs := []*discordgo.MessageEmbed{embed}
@@ -687,7 +707,9 @@ func editFollowupEmbed(s *discordgo.Session, i *discordgo.InteractionCreate, emb
 
 // emoji and color helpers for consistent styling
 func stateEmoji(state string, suspended bool) string {
-	if suspended { return "⏸️" }
+	if suspended {
+		return "⏸️"
+	}
 	switch strings.ToLower(state) {
 	case "running", "on":
 		return "🟢"
@@ -706,7 +728,9 @@ func boldState(state string, suspended bool) string {
 	}
 	s := strings.ToLower(state)
 	// capitalize first letter safely
-	if s == "" { return "**Unknown**" }
+	if s == "" {
+		return "**Unknown**"
+	}
 	r := []rune(s)
 	r[0] = toUpperRune(r[0])
 	return "**" + string(r) + "**"
@@ -714,12 +738,16 @@ func boldState(state string, suspended bool) string {
 
 func toUpperRune(r rune) rune {
 	// basic ASCII fast path
-	if r >= 'a' && r <= 'z' { return r - 32 }
+	if r >= 'a' && r <= 'z' {
+		return r - 32
+	}
 	return []rune(strings.ToUpper(string(r)))[0]
 }
 
 func stateColor(state string, suspended bool) int {
-	if suspended { return 0x95A5A6 }
+	if suspended {
+		return 0x95A5A6
+	}
 	switch strings.ToLower(state) {
 	case "running", "on":
 		return 0x57F287
@@ -742,6 +770,7 @@ func reload() {
 	config.Store(newCfg)
 	log.Printf("🔁 reloaded config")
 }
+
 // getCfg returns the current configuration snapshot.
 func getCfg() *Config { return config.Load().(*Config) }
 
@@ -788,11 +817,11 @@ type resourcesResp struct {
 		CurrentState string `json:"current_state"`
 		IsSuspended  bool   `json:"is_suspended"`
 		Resources    struct {
-			MemoryBytes     float64 `json:"memory_bytes"`
-			CPUAbsolute     float64 `json:"cpu_absolute"`
-			DiskBytes       float64 `json:"disk_bytes"`
-			NetworkRxBytes  float64 `json:"network_rx_bytes"`
-			NetworkTxBytes  float64 `json:"network_tx_bytes"`
+			MemoryBytes    float64 `json:"memory_bytes"`
+			CPUAbsolute    float64 `json:"cpu_absolute"`
+			DiskBytes      float64 `json:"disk_bytes"`
+			NetworkRxBytes float64 `json:"network_rx_bytes"`
+			NetworkTxBytes float64 `json:"network_tx_bytes"`
 		} `json:"resources"`
 	} `json:"attributes"`
 }
@@ -939,9 +968,15 @@ func postCommand(id, cmd string, token string) error {
 func postBackup(id, label, ignored string, lock bool, token string) error {
 	url := strings.TrimRight(getCfg().PteroBaseURL, "/") + "/api/client/servers/" + id + "/backups"
 	body := map[string]any{}
-	if strings.TrimSpace(label) != "" { body["name"] = label }
-	if strings.TrimSpace(ignored) != "" { body["ignored"] = ignored }
-	if lock { body["is_locked"] = true }
+	if strings.TrimSpace(label) != "" {
+		body["name"] = label
+	}
+	if strings.TrimSpace(ignored) != "" {
+		body["ignored"] = ignored
+	}
+	if lock {
+		body["is_locked"] = true
+	}
 	j, _ := json.Marshal(body)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(j))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -964,6 +999,9 @@ func postBackup(id, label, ignored string, lock bool, token string) error {
 // onceAlert ensures we only send one alert per failure period.
 var onceAlert sync.Once
 
+// lastHealth tracks the last known health state to detect recovery events.
+var lastHealth atomic.Bool
+
 // healthLoop periodically checks the panel health and emits a Discord alert
 // once per failure period.
 func healthLoop() {
@@ -979,7 +1017,15 @@ func healthLoop() {
 			if err := checkPanelHealth(); err != nil {
 				log.Printf("panel: %v", err)
 				alert(err.Error())
+				// mark unhealthy so we can detect recovery later
+				lastHealth.Store(false)
 			} else {
+				// if we were previously unhealthy, notify recovery
+				if !lastHealth.Load() {
+					notifyRecovery()
+				}
+				// mark healthy and reset failure guard
+				lastHealth.Store(true)
 				onceAlert = sync.Once{}
 			}
 		}
@@ -1018,7 +1064,19 @@ func alert(msg string) {
 	if cfg.AlertChannelID == "" || sess == nil {
 		return
 	}
-	onceAlert.Do(func() { _, _ = sess.ChannelMessageSend(cfg.AlertChannelID, "⚠️ Pterodactyl health check failed: "+msg) })
+	onceAlert.Do(func() {
+		_, _ = sess.ChannelMessageSend(cfg.AlertChannelID, "⚠️ Pterodactyl health check failed: "+msg)
+	})
+}
+
+// notifyRecovery posts a message when the panel transitions
+// from unhealthy back to healthy.
+func notifyRecovery() {
+	cfg := getCfg()
+	if cfg.AlertChannelID == "" || sess == nil {
+		return
+	}
+	_, _ = sess.ChannelMessageSend(cfg.AlertChannelID, "✅ Pterodactyl panel is back online.")
 }
 
 // ---------- utils ----------
@@ -1047,16 +1105,32 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	// Env overrides (ENV > file)
-	if v := os.Getenv("DISCORD_TOKEN"); v != "" { c.DiscordToken = v }
-	if v := os.Getenv("PTERO_BASE_URL"); v != "" { c.PteroBaseURL = v }
-	if v := os.Getenv("PTERO_CLIENT_TOKEN"); v != "" { c.PteroClientToken = v }
-	if v := os.Getenv("ALERT_CHANNEL_ID"); v != "" { c.AlertChannelID = v }
-	if v := os.Getenv("HEALTH_CHECK_INTERVAL"); v != "" { c.HealthCheckInterval = v }
+	if v := os.Getenv("DISCORD_TOKEN"); v != "" {
+		c.DiscordToken = v
+	}
+	if v := os.Getenv("PTERO_BASE_URL"); v != "" {
+		c.PteroBaseURL = v
+	}
+	if v := os.Getenv("PTERO_CLIENT_TOKEN"); v != "" {
+		c.PteroClientToken = v
+	}
+	if v := os.Getenv("ALERT_CHANNEL_ID"); v != "" {
+		c.AlertChannelID = v
+	}
+	if v := os.Getenv("HEALTH_CHECK_INTERVAL"); v != "" {
+		c.HealthCheckInterval = v
+	}
 
 	// CSV allowlists via env (override arrays if provided)
-	if v := os.Getenv("ALLOWED_GUILD_IDS"); v != "" { c.AllowedGuildIDs = parseCSV(v) }
-	if v := os.Getenv("ALLOWED_ROLE_IDS"); v != "" { c.AllowedRoleIDs = parseCSV(v) }
-	if v := os.Getenv("ALLOWED_USER_IDS"); v != "" { c.AllowedUserIDs = parseCSV(v) }
+	if v := os.Getenv("ALLOWED_GUILD_IDS"); v != "" {
+		c.AllowedGuildIDs = parseCSV(v)
+	}
+	if v := os.Getenv("ALLOWED_ROLE_IDS"); v != "" {
+		c.AllowedRoleIDs = parseCSV(v)
+	}
+	if v := os.Getenv("ALLOWED_USER_IDS"); v != "" {
+		c.AllowedUserIDs = parseCSV(v)
+	}
 
 	// Warn if still placeholders
 	if c.DiscordToken == "" || c.PteroBaseURL == "" || c.PteroClientToken == "" ||
@@ -1195,13 +1269,17 @@ func ensureEncKeyForLoad(existingSalt []byte) error {
 			return errors.New("encrypted tokens file missing salt; cannot derive key from passphrase")
 		}
 		key, err := scrypt.Key([]byte(pass), existingSalt, 1<<15, 8, 1, 32)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		encKey, encSalt = key, existingSalt
 		return nil
 	}
 	// 2) Try key file (raw 32-byte key)
 	if kb, err := os.ReadFile(userTokensKeyPath); err == nil {
-		if len(kb) != 32 { return fmt.Errorf("invalid key length in %s", userTokensKeyPath) }
+		if len(kb) != 32 {
+			return fmt.Errorf("invalid key length in %s", userTokensKeyPath)
+		}
 		encKey = kb
 		return nil
 	}
@@ -1221,37 +1299,57 @@ func ensureEncKeyForSave() error {
 		if len(encSalt) == 0 {
 			// generate new salt
 			encSalt = make([]byte, 16)
-			if _, err := rand.Read(encSalt); err != nil { return err }
+			if _, err := rand.Read(encSalt); err != nil {
+				return err
+			}
 		}
 		key, err := scrypt.Key([]byte(pass), encSalt, 1<<15, 8, 1, 32)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		encKey = key
 		return nil
 	}
 	// Fallback to (or create) key file
 	if kb, err := os.ReadFile(userTokensKeyPath); err == nil {
-		if len(kb) != 32 { return fmt.Errorf("invalid key length in %s", userTokensKeyPath) }
+		if len(kb) != 32 {
+			return fmt.Errorf("invalid key length in %s", userTokensKeyPath)
+		}
 		encKey = kb
 		return nil
 	}
 	// create new random key and write it
 	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil { return err }
-	if err := os.MkdirAll(filepath.Dir(userTokensKeyPath), 0o755); err != nil { return err }
-	if err := os.WriteFile(userTokensKeyPath, key, 0o600); err != nil { return err }
+	if _, err := rand.Read(key); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(userTokensKeyPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(userTokensKeyPath, key, 0o600); err != nil {
+		return err
+	}
 	encKey = key
 	return nil
 }
 
 // encryptValue seals the plaintext using AES-GCM and returns base64(nonce|ct).
 func encryptValue(plain string) (string, error) {
-	if err := ensureEncKeyForSave(); err != nil { return "", err }
+	if err := ensureEncKeyForSave(); err != nil {
+		return "", err
+	}
 	block, err := aes.NewCipher(encKey)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	gcm, err := cipher.NewGCM(block)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil { return "", err }
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
 	ct := gcm.Seal(nil, nonce, []byte(plain), nil)
 	out := append(nonce, ct...)
 	return base64.StdEncoding.EncodeToString(out), nil
@@ -1260,18 +1358,30 @@ func encryptValue(plain string) (string, error) {
 // decryptValue decodes base64(nonce|ct) and opens it with AES-GCM.
 func decryptValue(b64 string) (string, error) {
 	// encKey must already be available (ensureEncKeyForLoad called by loader with salt context)
-	if encKey == nil { return "", errors.New("encryption key not initialized") }
+	if encKey == nil {
+		return "", errors.New("encryption key not initialized")
+	}
 	raw, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	block, err := aes.NewCipher(encKey)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	gcm, err := cipher.NewGCM(block)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	ns := gcm.NonceSize()
-	if len(raw) < ns { return "", errors.New("ciphertext too short") }
+	if len(raw) < ns {
+		return "", errors.New("ciphertext too short")
+	}
 	nonce, ct := raw[:ns], raw[ns:]
 	pt, err := gcm.Open(nil, nonce, ct, nil)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	return string(pt), nil
 }
 
@@ -1291,13 +1401,19 @@ func loadUserTokens() error {
 	if err := json.Unmarshal(b, &enc); err == nil && enc.Version == 1 {
 		// initialize key for decryption
 		if enc.Salt != "" {
-			if salt, err := base64.StdEncoding.DecodeString(enc.Salt); err == nil { encSalt = salt }
+			if salt, err := base64.StdEncoding.DecodeString(enc.Salt); err == nil {
+				encSalt = salt
+			}
 		}
-		if err := ensureEncKeyForLoad(encSalt); err != nil { return err }
+		if err := ensureEncKeyForLoad(encSalt); err != nil {
+			return err
+		}
 		out := make(map[string]string, len(enc.Data))
 		for uid, ctb64 := range enc.Data {
 			pt, err := decryptValue(ctb64)
-			if err != nil { return fmt.Errorf("decrypt token for %s: %w", uid, err) }
+			if err != nil {
+				return fmt.Errorf("decrypt token for %s: %w", uid, err)
+			}
 			out[uid] = pt
 		}
 		userTokensMu.Lock()
@@ -1324,16 +1440,24 @@ func loadUserTokens() error {
 // storage with per-value nonces and versioned metadata.
 func saveUserTokens() error {
 	// ensure dir
-	if err := os.MkdirAll(filepath.Dir(userTokensPath), 0o755); err != nil { return err }
+	if err := os.MkdirAll(filepath.Dir(userTokensPath), 0o755); err != nil {
+		return err
+	}
 	userTokensMu.RLock()
 	m := userTokens
 	userTokensMu.RUnlock()
-	if m == nil { m = map[string]string{} }
-	if err := ensureEncKeyForSave(); err != nil { return err }
+	if m == nil {
+		m = map[string]string{}
+	}
+	if err := ensureEncKeyForSave(); err != nil {
+		return err
+	}
 	encMap := make(map[string]string, len(m))
 	for uid, tok := range m {
 		ctb64, err := encryptValue(tok)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		encMap[uid] = ctb64
 	}
 	out := encUserTokens{Version: 1, Data: encMap}
@@ -1386,7 +1510,11 @@ func initTokenEncryptionKey() error {
 // generateFileKey creates a new random 32-byte key at userTokensKeyPath.
 func generateFileKey() error {
 	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil { return err }
-	if err := os.MkdirAll(filepath.Dir(userTokensKeyPath), 0o755); err != nil { return err }
+	if _, err := rand.Read(key); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(userTokensKeyPath), 0o755); err != nil {
+		return err
+	}
 	return os.WriteFile(userTokensKeyPath, key, 0o600)
 }
