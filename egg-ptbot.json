@@ -1,31 +1,30 @@
 {
-    "_comment": "Pterodactyl Egg for PTBot - Discord bot for Pterodactyl server management",
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2025-01-12T00:00:00+00:00",
+    "exported_at": "2025-10-28T23:53:00+00:00",
     "name": "PTBot",
     "author": "jacoknapp",
+    "uuid": "514dc5ca-a55a-44d0-82de-32c713cf8947",
     "description": "A Discord bot that lets you manage your Pterodactyl servers directly from Discord. Supports slash commands for server control, status checks, and console commands.",
     "features": null,
     "docker_images": {
         "ghcr.io/jacoknapp/ptbot:latest": "ghcr.io/jacoknapp/ptbot:latest"
     },
     "file_denylist": [],
-    "startup": "./ptbot -config /data/config.json",
+    "startup": "/app/ptbot -config /home/container/data/config.json",
     "config": {
         "files": "{}",
+        "startup": "{\n  \"done\": \"Logged in as\"\n}",
         "logs": "{}",
-        "startup": {
-            "done": "✅ Logged in as"
-        },
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# PTBot installation script\n\n# Create data directory\nmkdir -p /mnt/server/data\n\n# Create basic config.json if it doesn't exist\necho 'Creating default config.json...'\ncat > /mnt/server/data/config.json << 'EOF'\n{\n  \"discord_token\": \"${DISCORD_TOKEN}\",\n  \"ptero_base_url\": \"${PTERO_BASE_URL}\",\n  \"ptero_client_token\": \"${PTERO_CLIENT_TOKEN}\",\n  \"alert_channel_id\": \"${ALERT_CHANNEL_ID}\",\n  \"health_check_interval\": \"${HEALTH_CHECK_INTERVAL}\",\n  \"allowed_guild_ids\": ${ALLOWED_GUILD_IDS},\n  \"allowed_role_ids\": ${ALLOWED_ROLE_IDS},\n  \"allowed_user_ids\": ${ALLOWED_USER_IDS}\n}\nEOF\n\necho 'PTBot installation completed.'",
-            "container": "alpine:latest",
+            "script": "#!/bin/sh\nset -e\n\n# Create data directory\nmkdir -p /mnt/server/data\n\n# Helper: convert comma-separated to JSON array\nto_json_array() {\n  val=\"$1\"\n  val_stripped=$(echo \"$val\" | tr -d ' \t\r\n')\n  if [ -z \"$val_stripped\" ] || [ \"$val_stripped\" = \"[]\" ]; then\n    echo \"[]\"\n    return\n  fi\n  out=\"[\"\n  oldifs=$IFS\n  IFS=,\n  for item in $val; do\n    trimmed=$(echo \"$item\" | sed 's/^ *//;s/ *$//')\n    [ -z \"$trimmed\" ] && continue\n    [ \"$out\" != \"[\" ] && out=\"$out,\"\n    out=\"$out\"\"\"$trimmed\"\"\"\n  done\n  IFS=$oldifs\n  out=\"$out]\"\n  echo \"$out\"\n}\n\nAGJ=$(to_json_array \"$ALLOWED_GUILD_IDS\")\nARJ=$(to_json_array \"$ALLOWED_ROLE_IDS\")\nAUJ=$(to_json_array \"$ALLOWED_USER_IDS\")\n\n# Write config.json\necho 'Creating default config.json...'\ncat > /mnt/server/data/config.json << EOF\n{\n  \"discord_token\": \"${DISCORD_TOKEN}\",\n  \"ptero_base_url\": \"${PTERO_BASE_URL}\",\n  \"ptero_client_token\": \"${PTERO_CLIENT_TOKEN}\",\n  \"alert_channel_id\": \"${ALERT_CHANNEL_ID}\",\n  \"health_check_interval\": \"${HEALTH_CHECK_INTERVAL}\",\n  \"allowed_guild_ids\": ${AGJ},\n  \"allowed_role_ids\": ${ARJ},\n  \"allowed_user_ids\": ${AUJ}\n}\nEOF\n\necho 'PTBot installation completed.'\n",
+            "container": "ghcr.io/pterodactyl/installers:alpine",
             "entrypoint": "sh"
         }
     },
@@ -35,8 +34,8 @@
             "description": "Your Discord bot token from https://discord.com/developers/applications",
             "env_variable": "DISCORD_TOKEN",
             "default_value": "",
-            "user_viewable": false,
-            "user_editable": true,
+            "user_viewable": 0,
+            "user_editable": 1,
             "rules": "required|string",
             "field_type": "text"
         },
@@ -45,9 +44,9 @@
             "description": "Base URL of your Pterodactyl panel (e.g., https://panel.example.com)",
             "env_variable": "PTERO_BASE_URL",
             "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "required|url",
+            "user_viewable": 1,
+            "user_editable": 1,
+            "rules": "required|string",
             "field_type": "text"
         },
         {
@@ -55,8 +54,8 @@
             "description": "Pterodactyl client API token for server management",
             "env_variable": "PTERO_CLIENT_TOKEN",
             "default_value": "",
-            "user_viewable": false,
-            "user_editable": true,
+            "user_viewable": 0,
+            "user_editable": 1,
             "rules": "required|string",
             "field_type": "text"
         },
@@ -65,8 +64,8 @@
             "description": "Discord channel ID for health check alerts (optional)",
             "env_variable": "ALERT_CHANNEL_ID",
             "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
+            "user_viewable": 1,
+            "user_editable": 1,
             "rules": "nullable|string",
             "field_type": "text"
         },
@@ -75,8 +74,8 @@
             "description": "How often to check server health (e.g., 2m, 5m, 1h)",
             "env_variable": "HEALTH_CHECK_INTERVAL",
             "default_value": "2m",
-            "user_viewable": true,
-            "user_editable": true,
+            "user_viewable": 1,
+            "user_editable": 1,
             "rules": "required|string",
             "field_type": "text"
         },
@@ -84,9 +83,9 @@
             "name": "Allowed Guild IDs",
             "description": "Comma-separated list of Discord server (guild) IDs allowed to use the bot",
             "env_variable": "ALLOWED_GUILD_IDS",
-            "default_value": "[]",
-            "user_viewable": true,
-            "user_editable": true,
+            "default_value": "",
+            "user_viewable": 1,
+            "user_editable": 1,
             "rules": "nullable|string",
             "field_type": "text"
         },
@@ -94,9 +93,9 @@
             "name": "Allowed Role IDs",
             "description": "Comma-separated list of Discord role IDs allowed to use the bot",
             "env_variable": "ALLOWED_ROLE_IDS",
-            "default_value": "[]",
-            "user_viewable": true,
-            "user_editable": true,
+            "default_value": "",
+            "user_viewable": 1,
+            "user_editable": 1,
             "rules": "nullable|string",
             "field_type": "text"
         },
@@ -104,9 +103,9 @@
             "name": "Allowed User IDs",
             "description": "Comma-separated list of Discord user IDs allowed to use the bot",
             "env_variable": "ALLOWED_USER_IDS",
-            "default_value": "[]",
-            "user_viewable": true,
-            "user_editable": true,
+            "default_value": "",
+            "user_viewable": 1,
+            "user_editable": 1,
             "rules": "nullable|string",
             "field_type": "text"
         },
@@ -115,9 +114,9 @@
             "description": "Allow untrusted TLS certificates for Pterodactyl panel (not recommended for production)",
             "env_variable": "PTBOT_INSECURE",
             "default_value": "false",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "required|boolean",
+            "user_viewable": 1,
+            "user_editable": 1,
+            "rules": "required|in:true,false",
             "field_type": "text"
         }
     ]
