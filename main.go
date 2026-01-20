@@ -40,6 +40,7 @@ type Config struct {
 	AllowedGuildIDs     []string `json:"allowed_guild_ids"`
 	AllowedRoleIDs      []string `json:"allowed_role_ids"`
 	AllowedUserIDs      []string `json:"allowed_user_ids"`
+	AllowedChannelIDs   []string `json:"allowed_channel_ids"`
 	PteroBaseURL        string   `json:"ptero_base_url"`
 	PteroClientToken    string   `json:"ptero_client_token"`
 	AlertChannelID      string   `json:"alert_channel_id"`
@@ -277,6 +278,18 @@ func isAllowed(i *discordgo.InteractionCreate) (bool, string) {
 		}
 		if !found {
 			return false, "guild not in allowlist"
+		}
+	}
+	if len(cfg.AllowedChannelIDs) > 0 {
+		found := false
+		for _, c := range cfg.AllowedChannelIDs {
+			if c == i.ChannelID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, "channel not in allowlist"
 		}
 	}
 	uid := i.Member.User.ID
@@ -1131,6 +1144,9 @@ func loadConfig(path string) (*Config, error) {
 	if v := os.Getenv("ALLOWED_USER_IDS"); v != "" {
 		c.AllowedUserIDs = parseCSV(v)
 	}
+	if v := os.Getenv("ALLOWED_CHANNEL_IDS"); v != "" {
+		c.AllowedChannelIDs = parseCSV(v)
+	}
 
 	// Warn if still placeholders
 	if c.DiscordToken == "" || c.PteroBaseURL == "" || c.PteroClientToken == "" ||
@@ -1153,6 +1169,7 @@ func writeConfigFromEnv(path string) error {
 		AllowedGuildIDs:     parseCSV(os.Getenv("ALLOWED_GUILD_IDS")),
 		AllowedRoleIDs:      parseCSV(os.Getenv("ALLOWED_ROLE_IDS")),
 		AllowedUserIDs:      parseCSV(os.Getenv("ALLOWED_USER_IDS")),
+		AllowedChannelIDs:   parseCSV(os.Getenv("ALLOWED_CHANNEL_IDS")),
 		PteroBaseURL:        envOrDefault("PTERO_BASE_URL", "https://panel.example.com"),
 		PteroClientToken:    envOrDefault("PTERO_CLIENT_TOKEN", "REPLACE_ME_PTERO_TOKEN"),
 		AlertChannelID:      os.Getenv("ALERT_CHANNEL_ID"),

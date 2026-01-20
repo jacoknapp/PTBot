@@ -13,8 +13,9 @@ PTBot is a Go-based Discord bot that lets you manage your Pterodactyl servers di
 - **Slash Commands**: Use `/pt` to list servers, check status, start, stop, restart, or send commands. 💬
 - **Autocomplete**: Server names autocomplete for fast, typo-free ops. 🔍
 - **Role & User Restrictions**: Only the cool kids (or the ones you allow) can use the bot. 😎
+- **Channel Restrictions**: Optionally restrict bot usage to specific channels. 📺
 - **Health Checks**: PTBot keeps an eye on your Pterodactyl panel and sends alerts if things go sideways. ⚠️
-- **Configurable**: Set up via config file or environment variables. Supports allowlists for guilds, roles, and users.
+- **Configurable**: Set up via config file or environment variables. Supports allowlists for guilds, roles, users, and channels.
 - **Per-user API keys**: Users can set their own Pterodactyl API key so their own server access and permissions apply.
    - Stored encrypted-at-rest on the bot host. The encryption key is provided via PTBOT_TOKENS_SECRET (preferred) or a 32-byte key file at /data/user_tokens.key.
 
@@ -56,6 +57,7 @@ services:
       ALLOWED_GUILD_IDS: <comma-separated-guild-ids> #optional
       ALLOWED_ROLE_IDS: <comma-separated-role-ids> #optional
       ALLOWED_USER_IDS: <comma-separated-user-ids> #optional
+      ALLOWED_CHANNEL_IDS: <comma-separated-channel-ids> #optional
       PTBOT_INSECURE: false #optional, set to true to allow untrusted TLS certs, env only
     command: ["-config", "/data/config.json"]
 ```
@@ -81,6 +83,7 @@ docker run -d \
    -e ALLOWED_GUILD_IDS=... \
    -e ALLOWED_ROLE_IDS=... \
    -e ALLOWED_USER_IDS=... \
+   -e ALLOWED_CHANNEL_IDS=... \
    -e PTBOT_INSECURE=false \
   ghcr.io/jacoknapp/ptbot:latest -config /data/config.json
 ```
@@ -98,7 +101,7 @@ docker run -d \
    - Select "bot" and "applications.commands" scopes
    - Set permissions (at minimum: Send Messages, Use Slash Commands)
    - Copy the generated URL and open it in your browser to invite the bot
-4. **Configure Allowed Guilds, Roles, Users** (optional)
+4. **Configure Allowed Guilds, Roles, Users, Channels** (optional)
    - Use the environment variables to restrict access
 
 ## How to Get a Pterodactyl Client API Key
