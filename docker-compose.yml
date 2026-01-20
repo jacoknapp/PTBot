@@ -17,5 +17,6 @@ services:
       ALLOWED_GUILD_IDS: ${ALLOWED_GUILD_IDS:-}
       ALLOWED_ROLE_IDS: ${ALLOWED_ROLE_IDS:-}
       ALLOWED_USER_IDS: ${ALLOWED_USER_IDS:-}
+      ALLOWED_CHANNEL_IDS: ${ALLOWED_CHANNEL_IDS:-}
       PTBOT_INSECURE: ${PTBOT_INSECURE:-false}
     command: ["-config", "/data/config.json"]
