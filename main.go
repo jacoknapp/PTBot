@@ -463,15 +463,29 @@ func doList(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		editFollowup(s, i, "No servers visible for this token.")
 		return
 	}
-	names := make([]string, 0, len(servers))
-	for _, sv := range servers {
-		names = append(names, sv.Name)
+	sort.Slice(servers, func(a, b int) bool { return servers[a].Name < servers[b].Name })
+	lines := make([]string, len(servers))
+	const listConcurrency = 5
+	sem := make(chan struct{}, listConcurrency)
+	var wg sync.WaitGroup
+	for idx, sv := range servers {
+		wg.Add(1)
+		go func(idx int, sv serverInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			emoji := "⚪"
+			if st, err := getResources(sv.ID, tok); err == nil {
+				emoji = stateEmoji(st.Attributes.CurrentState, st.Attributes.IsSuspended)
+			}
+			lines[idx] = fmt.Sprintf("%s %s", emoji, sv.Name)
+		}(idx, sv)
 	}
-	sort.Strings(names)
+	wg.Wait()
 	// Pretty embed list
 	embed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("Servers (%d)", len(names)),
-		Description: "• " + strings.Join(names, "\n• "),
+		Title:       fmt.Sprintf("Servers (%d)", len(servers)),
+		Description: "• " + strings.Join(lines, "\n• "),
 		Color:       0x5865F2, // blurple
 		Timestamp:   time.Now().Format(time.RFC3339),
 	}
