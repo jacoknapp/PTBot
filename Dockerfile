@@ -6,7 +6,7 @@ RUN go mod download
 COPY . .
 ENV CGO_ENABLED=0
 RUN go mod tidy && go mod download github.com/bwmarrin/discordgo
-RUN go build -ldflags="-s -w" -o /out/ptbot ./main.go
+RUN go build -ldflags="-s -w" -o /out/ptbot .
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /app

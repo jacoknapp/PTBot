@@ -26,7 +26,6 @@ jobs:
         run: |
           go mod tidy
           go mod download
-          go get -u ./...
 
       - name: Vet
         run: go vet ./...

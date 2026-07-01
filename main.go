@@ -62,7 +62,39 @@ var (
 	// user-specific Pterodactyl client tokens (keyed by Discord user ID)
 	userTokens   map[string]string
 	userTokensMu sync.RWMutex
+
+	// server list cache for autocomplete — keyed by token, TTL 10s
+	serverCacheMu sync.RWMutex
+	serverCache   = map[string]serverCacheEntry{}
 )
+
+const autocompleteCacheTTL = 10 * time.Second
+
+type serverCacheEntry struct {
+	servers []serverInfo
+	expiry  time.Time
+}
+
+// cachedListServers returns the server list for a token from cache when fresh,
+// otherwise fetches from the Pterodactyl API and caches the result.
+// Prevents autocomplete keystrokes from hammering the panel API.
+func cachedListServers(token string) ([]serverInfo, error) {
+	serverCacheMu.RLock()
+	if e, ok := serverCache[token]; ok && time.Now().Before(e.expiry) {
+		serverCacheMu.RUnlock()
+		return e.servers, nil
+	}
+	serverCacheMu.RUnlock()
+
+	servers, err := listServers(token)
+	if err != nil {
+		return nil, err
+	}
+	serverCacheMu.Lock()
+	serverCache[token] = serverCacheEntry{servers: servers, expiry: time.Now().Add(autocompleteCacheTTL)}
+	serverCacheMu.Unlock()
+	return servers, nil
+}
 
 // main is the PTBot entrypoint; it loads configuration, initializes Discord,
 // prepares encryption keys, registers commands, and starts health checks.
@@ -120,6 +152,13 @@ func main() {
 
 	bgCtx, bgCancel = context.WithCancel(context.Background())
 	defer bgCancel()
+	// Zero encryption key from memory on shutdown (best-effort).
+	defer func() {
+		for i := range encKey {
+			encKey[i] = 0
+		}
+		encKey = nil
+	}()
 
 	s, err := discordgo.New("Bot " + cfg.DiscordToken)
 	if err != nil {
@@ -216,9 +255,17 @@ func onAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		}
 	}
 
+	// Guard against DM interactions where Member is nil.
+	if i.Member == nil || i.Member.User == nil {
+		_ = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+			Data: &discordgo.InteractionResponseData{Choices: []*discordgo.ApplicationCommandOptionChoice{}},
+		})
+		return
+	}
 	// Use the requesting user's token for autocomplete suggestions; if none is available, return no choices
 	effTok, _ := tokenForUserOrError(i.Member.User.ID)
-	servers, err := listServers(effTok)
+	servers, err := cachedListServers(effTok)
 	if err != nil {
 		servers = nil
 	}
@@ -266,6 +313,7 @@ func onAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 // isAllowed enforces guild/role/user allowlists and returns a boolean along
 // with a short reason string for audit and user feedback.
+// Returns false for DM interactions (i.Member is nil outside guilds).
 func isAllowed(i *discordgo.InteractionCreate) (bool, string) {
 	cfg := getCfg()
 	if len(cfg.AllowedGuildIDs) > 0 {
@@ -291,6 +339,10 @@ func isAllowed(i *discordgo.InteractionCreate) (bool, string) {
 		if !found {
 			return false, "channel not in allowlist"
 		}
+	}
+	// i.Member is nil for DM interactions; reject rather than panic.
+	if i.Member == nil || i.Member.User == nil {
+		return false, "not a guild interaction"
 	}
 	uid := i.Member.User.ID
 	for _, u := range cfg.AllowedUserIDs {
@@ -633,20 +685,19 @@ func doSetKey(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		respondEphemeralEmbed(s, i, embed)
 		return
 	}
-	// Defer response to avoid 3s timeout, then validate
+	// Defer response to avoid 3s timeout, then validate before persisting.
 	respondThinking(s, i)
-	// Save key and make a quick sanity check call to validate it (optional)
-	setUserToken(uid, raw)
 	if _, err := listServers(raw); err != nil {
 		embed := &discordgo.MessageEmbed{
-			Title:       "Key saved",
-			Description: "Saved, but validation failed: " + err.Error(),
-			Color:       0xFEE75C,
+			Title:       "Key rejected",
+			Description: "Validation failed (key not saved): " + err.Error(),
+			Color:       0xED4245,
 			Timestamp:   time.Now().Format(time.RFC3339),
 		}
 		editFollowupEmbed(s, i, embed)
 		return
 	}
+	setUserToken(uid, raw)
 	embed := &discordgo.MessageEmbed{
 		Title:       "Key saved",
 		Description: "Your API key was saved and validated.",
@@ -844,7 +895,8 @@ type serverInfo struct {
 	Name string
 }
 
-// listServers retrieves all visible servers for the provided Pterodactyl token.
+// listServers retrieves all visible servers for the provided Pterodactyl token,
+// following pagination until all pages are consumed.
 func listServers(token string) ([]serverInfo, error) {
 	cfg := getCfg()
 	if strings.TrimSpace(token) == "" {
@@ -861,14 +913,17 @@ func listServers(token string) ([]serverInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer res.Body.Close()
+		// Close body before next iteration, not deferred to function return.
+		var r serverListResp
 		if res.StatusCode >= 300 {
 			b, _ := io.ReadAll(res.Body)
+			res.Body.Close()
 			return nil, fmt.Errorf("GET %s -> %d: %s", url, res.StatusCode, string(b))
 		}
-		var r serverListResp
-		if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
-			return nil, err
+		decErr := json.NewDecoder(res.Body).Decode(&r)
+		res.Body.Close()
+		if decErr != nil {
+			return nil, decErr
 		}
 		for _, d := range r.Data {
 			out = append(out, serverInfo{ID: d.Attributes.Identifier, Name: d.Attributes.Name})
@@ -1016,10 +1071,10 @@ var onceAlert sync.Once
 var lastHealth atomic.Bool
 
 // healthLoop periodically checks the panel health and emits a Discord alert
-// once per failure period.
+// once per failure period. The interval is re-evaluated each tick so SIGHUP
+// config reloads take effect without a restart.
 func healthLoop() {
-	cfg := getCfg()
-	interval := parseDurDefault(cfg.HealthCheckInterval, 2*time.Minute)
+	interval := parseDurDefault(getCfg().HealthCheckInterval, 2*time.Minute)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -1027,6 +1082,11 @@ func healthLoop() {
 		case <-bgCtx.Done():
 			return
 		case <-t.C:
+			// Re-read interval; reset ticker if it changed.
+			if newInterval := parseDurDefault(getCfg().HealthCheckInterval, 2*time.Minute); newInterval != interval {
+				interval = newInterval
+				t.Reset(interval)
+			}
 			if err := checkPanelHealth(); err != nil {
 				log.Printf("panel: %v", err)
 				alert(err.Error())
@@ -1214,31 +1274,12 @@ func parseCSV(s string) []string {
 	return out
 }
 
-// ternary returns a if cond is true, otherwise b (generic helper).
-func ternary[T any](cond bool, a, b T) T {
-	if cond {
-		return a
-	}
-	return b
-}
-
 // ---------- per-user token storage ----------
 
-const userTokensPath = "/data/user_tokens.json"
-const userTokensKeyPath = "/data/user_tokens.key"
-const envTokensSecret = "PTBOT_TOKENS_SECRET"
+var userTokensPath = "/data/user_tokens.json"
+var userTokensKeyPath = "/data/user_tokens.key"
 
-// effectiveToken returns the token to use for a given Discord user ID,
-// falling back to the default from config when none is set.
-func effectiveToken(userID string) string {
-	userTokensMu.RLock()
-	tok, ok := userTokens[userID]
-	userTokensMu.RUnlock()
-	if ok && strings.TrimSpace(tok) != "" {
-		return tok
-	}
-	return getCfg().PteroClientToken
-}
+const envTokensSecret = "PTBOT_TOKENS_SECRET"
 
 // setUserToken stores the token in memory for the user and persists to disk.
 func setUserToken(userID, token string) {
@@ -1261,11 +1302,16 @@ func clearUserToken(userID string) {
 	_ = saveUserTokens()
 }
 
+// scryptN is the work factor used when deriving the token encryption key from
+// a passphrase. Must be a power of two; 1<<17 meets OWASP minimum for sensitive data.
+const scryptN = 1 << 17
+
 // Encrypted on-disk structure
 type encUserTokens struct {
 	Version int               `json:"version"`
-	Salt    string            `json:"salt"` // base64(salt) for passphrase-derived keys
-	Data    map[string]string `json:"data"` // userID -> base64(nonce|ciphertext)
+	ScryptN int               `json:"scrypt_n,omitempty"` // 0 means legacy 1<<15
+	Salt    string            `json:"salt"`               // base64(salt) for passphrase-derived keys
+	Data    map[string]string `json:"data"`               // userID -> base64(nonce|ciphertext)
 }
 
 var (
@@ -1273,19 +1319,19 @@ var (
 	encSalt []byte // salt used with passphrase-derived key
 )
 
-// ensureEncKeyForLoad prepares the encryption key for decrypting tokens based
-// on available inputs: a passphrase-derived key (with provided salt) or a
-// file key stored at userTokensKeyPath.
-func ensureEncKeyForLoad(existingSalt []byte) error {
+// ensureEncKeyForLoad prepares the encryption key for decrypting tokens.
+// n is the scrypt work factor read from the on-disk file (allows decrypting
+// files written with an older, lower N before migration re-encrypts them).
+func ensureEncKeyForLoad(existingSalt []byte, n int) error {
 	if encKey != nil {
 		return nil
 	}
-	// 1) If passphrase provided, derive using existing salt
+	// 1) If passphrase provided, derive using existing salt and the file's N
 	if pass := strings.TrimSpace(os.Getenv(envTokensSecret)); pass != "" {
 		if len(existingSalt) == 0 {
 			return errors.New("encrypted tokens file missing salt; cannot derive key from passphrase")
 		}
-		key, err := scrypt.Key([]byte(pass), existingSalt, 1<<15, 8, 1, 32)
+		key, err := scrypt.Key([]byte(pass), existingSalt, n, 8, 1, 32)
 		if err != nil {
 			return err
 		}
@@ -1311,7 +1357,7 @@ func ensureEncKeyForSave() error {
 	if encKey != nil {
 		return nil
 	}
-	// Prefer passphrase if provided
+	// Prefer passphrase if provided; always derive with current scryptN
 	if pass := strings.TrimSpace(os.Getenv(envTokensSecret)); pass != "" {
 		if len(encSalt) == 0 {
 			// generate new salt
@@ -1320,7 +1366,7 @@ func ensureEncKeyForSave() error {
 				return err
 			}
 		}
-		key, err := scrypt.Key([]byte(pass), encSalt, 1<<15, 8, 1, 32)
+		key, err := scrypt.Key([]byte(pass), encSalt, scryptN, 8, 1, 32)
 		if err != nil {
 			return err
 		}
@@ -1422,7 +1468,12 @@ func loadUserTokens() error {
 				encSalt = salt
 			}
 		}
-		if err := ensureEncKeyForLoad(encSalt); err != nil {
+		// Use N from file; 0 means legacy 1<<15 written before ScryptN was stored.
+		fileN := enc.ScryptN
+		if fileN == 0 {
+			fileN = 1 << 15
+		}
+		if err := ensureEncKeyForLoad(encSalt, fileN); err != nil {
 			return err
 		}
 		out := make(map[string]string, len(enc.Data))
@@ -1436,6 +1487,18 @@ func loadUserTokens() error {
 		userTokensMu.Lock()
 		userTokens = out
 		userTokensMu.Unlock()
+		// Migrate to current scryptN if the file used a weaker value.
+		if fileN != scryptN {
+			for i := range encKey {
+				encKey[i] = 0
+			}
+			encKey = nil
+			if err := saveUserTokens(); err != nil {
+				log.Printf("warning: scrypt N migration failed: %v", err)
+			} else {
+				log.Printf("migrated token encryption from scrypt N=%d to N=%d", fileN, scryptN)
+			}
+		}
 		return nil
 	}
 	// Backward compatibility: plaintext map
@@ -1477,7 +1540,7 @@ func saveUserTokens() error {
 		}
 		encMap[uid] = ctb64
 	}
-	out := encUserTokens{Version: 1, Data: encMap}
+	out := encUserTokens{Version: 1, ScryptN: scryptN, Data: encMap}
 	if len(encSalt) > 0 {
 		out.Salt = base64.StdEncoding.EncodeToString(encSalt)
 	}
