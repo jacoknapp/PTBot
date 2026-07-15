@@ -78,6 +78,27 @@ func makeInteraction(guildID, channelID, userID string, roles []string) *discord
 
 // ---------- pure helper unit tests ----------
 
+func TestIsGatewayStale(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		lastAck   time.Time
+		threshold time.Duration
+		want      bool
+	}{
+		{"fresh ack", now.Add(-1 * time.Second), 15 * time.Minute, false},
+		{"well within threshold", now.Add(-5 * time.Minute), 15 * time.Minute, false},
+		{"exactly at threshold", now.Add(-15 * time.Minute), 15 * time.Minute, false},
+		{"just past threshold", now.Add(-15*time.Minute - time.Second), 15 * time.Minute, true},
+		{"way stale", now.Add(-7 * 24 * time.Hour), 15 * time.Minute, true},
+	}
+	for _, c := range cases {
+		if got := isGatewayStale(c.lastAck, now, c.threshold); got != c.want {
+			t.Errorf("%s: isGatewayStale=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestParseCSV(t *testing.T) {
 	cases := []struct {
 		in   string

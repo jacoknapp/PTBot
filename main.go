@@ -169,6 +169,10 @@ func main() {
 	sess.AddHandler(onInteractionCreate)
 	sess.AddHandler(onAutocomplete)
 
+	// Started before Open() so it also catches a hang on the very first
+	// connection attempt, not just on later reconnects.
+	go gatewayWatchdog(sess)
+
 	if err := sess.Open(); err != nil {
 		log.Fatalf("discord open: %v", err)
 	}
@@ -1077,6 +1081,57 @@ func postBackup(id, label, ignored string, lock bool, token string) error {
 }
 
 // ---------- Maintenance ----------
+
+// gatewayStaleThreshold is how long we tolerate a Discord gateway session
+// going without a heartbeat ack before assuming it is wedged and forcing a
+// restart. Generous enough to ride out discordgo's own reconnect backoff
+// (capped at 10m) without false-triggering during a normal outage.
+const gatewayStaleThreshold = 15 * time.Minute
+
+// gatewayWatchdogInterval is how often the watchdog polls for staleness.
+const gatewayWatchdogInterval = 30 * time.Second
+
+// isGatewayStale reports whether the time since the last heartbeat ack
+// exceeds the given threshold. Extracted for testability.
+func isGatewayStale(lastAck, now time.Time, threshold time.Duration) bool {
+	return now.Sub(lastAck) > threshold
+}
+
+// gatewayWatchdog guards against discordgo's Session.Open() hanging forever.
+// Open() holds the session's write lock for its entire duration, including
+// while blocked in the unbounded ReadMessage() call that waits for Discord's
+// Hello packet (no read deadline is set). If that read never returns — e.g.
+// a DNS blip leaves a half-open socket after a heartbeat-ack timeout
+// triggers a reconnect — the reconnect loop freezes silently: no more logs,
+// no crash, so the container's restart policy never kicks in. This is what
+// took the bot offline for a week on 2026-07-08.
+//
+// LastHeartbeatAck is read without Lock/RLock, matching discordgo's own
+// public HeartbeatLatency() helper, specifically to avoid deadlocking on the
+// same lock Open() is holding while stuck. This is started before the first
+// sess.Open() call so it also catches a hang on initial startup, not just on
+// reconnect.
+func gatewayWatchdog(sess *discordgo.Session) {
+	ticker := time.NewTicker(gatewayWatchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-bgCtx.Done():
+			return
+		case <-ticker.C:
+			if isGatewayStale(sess.LastHeartbeatAck, time.Now().UTC(), gatewayStaleThreshold) {
+				log.Printf("🔴 gateway watchdog: no heartbeat ack in over %v, session appears wedged; forcing restart", gatewayStaleThreshold)
+				// main() may itself be blocked inside the hung sess.Open() call
+				// (startup case), so the normal signal-driven shutdown path may
+				// be unreachable. os.Exit skips deferred cleanup, but the
+				// process is being killed because it's in an unrecoverable
+				// state anyway; restart: unless-stopped brings up a fresh
+				// process with a clean connection.
+				os.Exit(1)
+			}
+		}
+	}
+}
 
 // onceAlert ensures we only send one alert per failure period.
 var onceAlert sync.Once
